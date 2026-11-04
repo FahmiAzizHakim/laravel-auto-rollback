@@ -31,7 +31,7 @@ abstract class TestCase extends Orchestra
             'prefix' => '',
         ]);
 
-        $app['config']->set('auto-rollback.enabled', true);
+        $app['config']->set('auto-rollback.mode', 'ON');
         $app['config']->set('auto-rollback.log.path', $this->logPath);
     }
 
@@ -50,5 +50,10 @@ abstract class TestCase extends Orchestra
         File::deleteDirectory($this->logPath);
 
         parent::tearDown();
+    }
+
+    protected function logFile(string $method, string $route): string
+    {
+        return implode(DIRECTORY_SEPARATOR, [$this->logPath, now()->format('Ymd'), $method, str_replace('/', DIRECTORY_SEPARATOR, $route)]);
     }
 }

@@ -2,9 +2,12 @@
 
 namespace FahmiAzizHakim\LaravelAutoRollback\Tests\Feature;
 
+use FahmiAzizHakim\LaravelAutoRollback\AutoRollback;
+use FahmiAzizHakim\LaravelAutoRollback\Mode;
 use FahmiAzizHakim\LaravelAutoRollback\Tests\TestCase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
+use PHPUnit\Framework\Attributes\TestWith;
 
 class AutoRollbackTest extends TestCase
 {
@@ -57,6 +60,7 @@ class AutoRollbackTest extends TestCase
         $log = file_get_contents($file);
         $this->assertStringContainsString("insert into \"articles\" (\"title\") values ('Hello')", $log);
         $this->assertStringContainsString('[testing] rolled back', $log);
+        $this->assertStringContainsString('Mode   : ON', $log);
         $this->assertStringContainsString('Status : 200', $log);
     }
 
@@ -104,7 +108,7 @@ class AutoRollbackTest extends TestCase
         $this->assertDirectoryDoesNotExist($this->logPath);
     }
 
-    public function test_it_is_forced_off_in_production(): void
+    public function test_in_production_on_runs_as_on_error_so_a_successful_request_is_committed(): void
     {
         $this->app['env'] = 'production';
 
@@ -114,17 +118,61 @@ class AutoRollbackTest extends TestCase
         $this->assertDirectoryDoesNotExist($this->logPath);
     }
 
-    public function test_it_does_nothing_when_disabled(): void
+    public function test_in_production_on_runs_as_on_error_so_a_failed_request_is_rolled_back(): void
     {
-        config(['auto-rollback.enabled' => false]);
+        Route::post('v1/sites/articles/fail', function () {
+            DB::table('articles')->insert(['title' => 'Lost']);
+
+            throw new \RuntimeException('Something broke');
+        });
+
+        $this->app['env'] = 'production';
+
+        $this->postJson('v1/sites/articles/fail')->assertStatus(500);
+
+        $this->assertSame(0, DB::table('articles')->count());
+        $this->assertStringContainsString(
+            'Mode   : ON_ERROR',
+            file_get_contents($this->logFile('post', 'v1/sites/articles/fail.txt'))
+        );
+    }
+
+    public function test_off_stays_off_in_production(): void
+    {
+        config(['auto-rollback.mode' => 'OFF']);
+        $this->app['env'] = 'production';
 
         $this->postJson('v1/sites/articles')->assertOk();
 
         $this->assertSame(1, DB::table('articles')->count());
+        $this->assertDirectoryDoesNotExist($this->logPath);
     }
 
-    protected function logFile(string $method, string $route): string
+    #[TestWith(['local'])]
+    #[TestWith(['production'])]
+    public function test_it_is_off_when_auto_rollback_is_not_set(string $env): void
     {
-        return implode(DIRECTORY_SEPARATOR, [$this->logPath, now()->format('Ymd'), $method, str_replace('/', DIRECTORY_SEPARATOR, $route)]);
+        putenv('AUTO_ROLLBACK');
+        unset($_ENV['AUTO_ROLLBACK'], $_SERVER['AUTO_ROLLBACK']);
+
+        // The package's own defaults, read fresh with the variable missing.
+        config(['auto-rollback' => require __DIR__.'/../../config/auto-rollback.php']);
+        $this->app['env'] = $env;
+
+        $this->assertSame(Mode::Off, $this->app->make(AutoRollback::class)->mode());
+
+        $this->postJson('v1/sites/articles')->assertOk();
+
+        $this->assertSame(1, DB::table('articles')->count());
+        $this->assertDirectoryDoesNotExist($this->logPath);
+    }
+
+    public function test_it_does_nothing_when_off(): void
+    {
+        config(['auto-rollback.mode' => 'OFF']);
+
+        $this->postJson('v1/sites/articles')->assertOk();
+
+        $this->assertSame(1, DB::table('articles')->count());
     }
 }

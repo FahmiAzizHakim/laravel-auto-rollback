@@ -4,25 +4,45 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Auto Rollback
+    | Auto Rollback Mode
     |--------------------------------------------------------------------------
     |
-    | When enabled, every HTTP request runs inside a database transaction on
-    | each connection it touches, and that transaction is rolled back once the
-    | response has been sent. Nothing a request writes is ever kept.
+    | Every HTTP request runs inside a database transaction on each connection
+    | it touches. What happens to that transaction once the response has been
+    | sent depends on the mode:
     |
-    | Forced off when APP_ENV=production, whatever this value says.
+    |   ON        always rolled back, and the request's queries are logged
+    |   OFF       no transaction; requests run normally
+    |   ON_ERROR  committed, unless the request failed -- then rolled back
+    |             and logged
+    |
+    | true and false still mean ON and OFF. When APP_ENV=production, ON
+    | runs as ON_ERROR, so a successful request is never rolled back there.
     |
     */
 
-    'enabled' => env('AUTO_ROLLBACK', false),
+    'mode' => env('AUTO_ROLLBACK', 'off'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | What Counts As An Error (ON_ERROR)
+    |--------------------------------------------------------------------------
+    |
+    | A request failed if an exception was thrown during it -- including
+    | validation, authorization and not-found exceptions -- or if its response
+    | status is at least this value without one.
+    |
+    */
+
+    'error_status' => 500,
 
     /*
     |--------------------------------------------------------------------------
     | Query Log
     |--------------------------------------------------------------------------
     |
-    | Every query a request ran, with its bindings substituted, is appended to
+    | Every query a rolled-back request ran, with its bindings substituted, is
+    | appended to
     |
     |   {path}/{Ymd}/{method}/{route uri}.txt
     |

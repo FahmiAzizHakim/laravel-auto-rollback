@@ -14,9 +14,14 @@ use Throwable;
 class AutoRollback
 {
     /**
-     * Whether a request is currently running inside the rollback transaction.
+     * The mode the current request started in, or null outside one.
      */
-    protected bool $active = false;
+    protected ?Mode $mode = null;
+
+    /**
+     * The request the transaction was started for.
+     */
+    protected ?Request $request = null;
 
     /**
      * The connections a transaction was opened on, keyed by object id so a
@@ -33,30 +38,42 @@ class AutoRollback
 
     public function __construct(protected Application $app) {}
 
+    public function mode(): Mode
+    {
+        $mode = Mode::fromConfig($this->app['config']->get('auto-rollback.mode'));
+
+        // Production never throws away a successful request's writes.
+        if ($mode === Mode::On && $this->app->isProduction()) {
+            return Mode::OnError;
+        }
+
+        return $mode;
+    }
+
     public function enabled(): bool
     {
-        return (bool) $this->app['config']->get('auto-rollback.enabled')
-            && ! $this->app->isProduction();
+        return $this->mode() !== Mode::Off;
     }
 
     public function active(): bool
     {
-        return $this->active;
+        return $this->mode !== null;
     }
 
     /**
      * Open a transaction on every connection already established, and on every
      * one established from now on (see wrap()) until finish() is called.
      */
-    public function start(): void
+    public function start(Request $request): void
     {
         // A long-running server (Octane) whose last request never terminated.
-        if ($this->active) {
+        if ($this->active()) {
             $this->rollBackAll();
         }
 
         $this->reset();
-        $this->active = true;
+        $this->mode = $this->mode();
+        $this->request = $request;
 
         foreach ($this->app['db']->getConnections() as $connection) {
             $this->wrap($connection);
@@ -65,7 +82,7 @@ class AutoRollback
 
     public function wrap(Connection $connection): void
     {
-        if (! $this->active || isset($this->connections[spl_object_id($connection)])) {
+        if (! $this->active() || isset($this->connections[spl_object_id($connection)])) {
             return;
         }
 
@@ -77,7 +94,7 @@ class AutoRollback
 
     public function record(QueryExecuted $query): void
     {
-        if (! $this->active) {
+        if (! $this->active()) {
             return;
         }
 
@@ -86,14 +103,27 @@ class AutoRollback
 
     public function finish(Request $request, ?Response $response = null): void
     {
-        if (! $this->active) {
+        // Laravel never clears its terminating callbacks, so in a process that
+        // serves several requests (feature tests, long-running servers) the
+        // callbacks of earlier requests run again at the end of this one.
+        if (! $this->active() || $request !== $this->request) {
             return;
         }
 
-        $results = $this->rollBackAll();
+        $mode = $this->mode;
+        $exception = $this->exceptionFrom($response);
+        $failed = $exception !== null
+            || ($response?->getStatusCode() ?? 500) >= $this->app['config']->get('auto-rollback.error_status', 500);
 
-        if ($this->app['config']->get('auto-rollback.log.enabled')) {
-            $this->writeLog($request, $response, $results);
+        $rolledBack = $mode === Mode::On || $failed;
+        $results = $rolledBack ? $this->rollBackAll() : $this->commitAll();
+
+        // ON_ERROR logs only the requests it rolled back, and a commit that
+        // failed, since that request's writes were lost too.
+        $commitFailed = (bool) preg_grep('/^COMMIT FAILED/', $results);
+
+        if (($rolledBack || $commitFailed) && $this->app['config']->get('auto-rollback.log.enabled')) {
+            $this->writeLog($request, $response, $mode, $exception, $results);
         }
 
         $this->reset();
@@ -110,7 +140,23 @@ class AutoRollback
             $results[$connection->getName()] = $this->rollBack($connection);
         }
 
-        $this->active = false;
+        $this->mode = null;
+
+        return $results;
+    }
+
+    /**
+     * @return array<string, string> the outcome on each connection, by name
+     */
+    protected function commitAll(): array
+    {
+        $results = [];
+
+        foreach ($this->connections as $connection) {
+            $results[$connection->getName()] = $this->commit($connection);
+        }
+
+        $this->mode = null;
 
         return $results;
     }
@@ -135,6 +181,56 @@ class AutoRollback
         }
     }
 
+    protected function commit(Connection $connection): string
+    {
+        try {
+            // Already committed mid-request, as in rollBack(). Without this
+            // package those writes would have been kept too.
+            if (! $connection->getPdo()->inTransaction()) {
+                $connection->rollBack(0);
+
+                return 'committed (mid-request, by a DDL statement or an unmatched DB::commit())';
+            }
+
+            // A transaction the app opened and never closed. Without this
+            // package it would have been discarded with the connection, so it
+            // is here too.
+            $note = '';
+
+            if ($connection->transactionLevel() > 1) {
+                $connection->rollBack(1);
+                $note = ' (a transaction the app left open was rolled back first)';
+            }
+
+            $connection->commit();
+
+            return 'committed'.$note;
+        } catch (Throwable $e) {
+            // The response has already gone out as a success, so this is the
+            // only place the failure shows up.
+            report($e);
+
+            try {
+                $connection->rollBack(0);
+            } catch (Throwable) {
+                // Nothing left to undo.
+            }
+
+            return 'COMMIT FAILED - '.$e->getMessage();
+        }
+    }
+
+    /**
+     * The exception the request failed with, as attached to the response by
+     * Laravel when it rendered it.
+     */
+    protected function exceptionFrom(?Response $response): ?Throwable
+    {
+        $exception = $response->exception ?? null;
+
+        return $exception instanceof Throwable ? $exception : null;
+    }
+
     protected function rawSql(QueryExecuted $query): string
     {
         try {
@@ -147,7 +243,7 @@ class AutoRollback
     /**
      * @param  array<string, string>  $results
      */
-    protected function writeLog(Request $request, ?Response $response, array $results): void
+    protected function writeLog(Request $request, ?Response $response, Mode $mode, ?Throwable $exception, array $results): void
     {
         if ($this->queries === []) {
             return;
@@ -160,8 +256,10 @@ class AutoRollback
             str_repeat('=', 80),
             sprintf('[%s] %s /%s', now()->format('Y-m-d H:i:s'), $request->method(), ltrim($request->path(), '/')),
             'Route  : '.$uri,
+            'Mode   : '.strtoupper($mode->value),
             'Status : '.($response?->getStatusCode() ?? '-'),
             'IP     : '.$request->ip(),
+            ...($exception ? ['Error  : '.get_class($exception).': '.$exception->getMessage()] : []),
             str_repeat('-', 80),
             ...$this->queries,
             str_repeat('-', 80),
@@ -201,6 +299,7 @@ class AutoRollback
 
     protected function reset(): void
     {
+        $this->request = null;
         $this->connections = [];
         $this->queries = [];
     }

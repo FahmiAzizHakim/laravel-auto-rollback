@@ -17,10 +17,10 @@ class RollBackRequest
 
     public function handle(Request $request, Closure $next): Response
     {
-        // Checked again here, not only at boot, so the production guard holds
-        // even if the environment changes after the app booted.
+        // Checked again here, not only at boot, so a change of mode or
+        // environment after the app booted is honoured.
         if ($this->autoRollback->enabled()) {
-            $this->autoRollback->start();
+            $this->autoRollback->start($request);
         }
 
         return $next($request);
