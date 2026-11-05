@@ -4,7 +4,7 @@ Run every HTTP request inside a database transaction, then decide once the respo
 
 It is built for **demo, staging, development and dry-run** environments. **In production, `ON` runs as `ON_ERROR`**, so a successful request is never rolled back there.
 
-Supports MySQL, MariaDB, PostgreSQL and SQLite, on Laravel 11 and 12.
+Supports MySQL, MariaDB, PostgreSQL and SQLite, on Laravel 11 and 12. Laravel 13 can be installed but has not been tested yet; see [Laravel 13](#laravel-13).
 
 ## Installation
 
@@ -17,6 +17,19 @@ The service provider is auto-discovered. Then choose a mode in `.env`:
 ```env
 AUTO_ROLLBACK=ON
 ```
+
+## Laravel 13
+
+The package installs on Laravel 13, but it **has not been tested there yet**. The test suite runs on Laravel 11 and 12.
+
+It relies only on long-standing Laravel APIs (database events, global middleware, terminating callbacks and auth guards), so it is expected to work. Until that is confirmed, try it in development or staging before relying on it.
+
+If you use it on Laravel 13, please let me know how it went, whether it runs smoothly or you hit an error, by [opening an issue](https://github.com/FahmiAzizHakim/laravel-auto-rollback/issues). For an error, include:
+
+- Your Laravel and PHP versions
+- Your database (MySQL, MariaDB, PostgreSQL or SQLite) and its version
+- Your `AUTO_ROLLBACK` and `RBQUERY_LOG` settings
+- The error message and stack trace
 
 ## Modes
 
@@ -53,7 +66,7 @@ In `ON_ERROR` mode a request **failed** if either of these is true:
 |-------------------|------------|-------------------------------------------------------------|
 | `AUTO_ROLLBACK`   | `OFF`      | `ON`, `OFF` or `ON_ERROR`                                   |
 | `RBQUERY_LOG`     | `ROLLBACK` | `ROLLBACK`, `ALWAYS` or `NEVER`                             |
-| `RB_SESSION_USER` | (empty)    | The user field to log, e.g. `email` or `id`, or `header:<name>` |
+| `RB_SESSION_USER` | (empty)    | The user field to log, e.g. `email` or `id`, or `header:<name>`. See [User session log](#user-session-log) |
 
 `AUTO_ROLLBACK_LOG=false` from v1.1 still works and means `RBQUERY_LOG=NEVER`. If both are set, `RBQUERY_LOG` wins.
 
@@ -142,15 +155,7 @@ Error  : Illuminate\Validation\ValidationException: The title field is required.
   - `NO TRANSACTION` (`OFF` + `ALWAYS`)
 - The section listing each connection's outcome is left out under `OFF`, since no transaction was opened.
 - The `Error` line appears only when the request threw an exception.
-- `User` shows who made the request, and appears only when `RB_SESSION_USER` is set. For `RB_SESSION_USER=email`, the package uses the first of these that has a value:
-  1. The `email` of the authenticated user, from any guard: session, JWT, Sanctum and so on. Only guards that already loaded their user during the request are asked, so no extra query runs.
-  2. The session value `email`.
-
-  Dot notation reaches nested values, e.g. `profile.name`. The line reads `User : -` when neither has a value, such as for a guest. A field named in `log.hidden` is masked.
-
-  `RB_SESSION_USER=header:X-User-Email` reads that request header instead, and nothing else. Use it for a service behind a gateway, where the gateway passes the user along in a header rather than the service authenticating them. Header names are case-insensitive. Credential headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `X-Api-Key`, `X-CSRF-Token`, `X-XSRF-Token`) and headers named in `log.hidden` are masked.
-
-  A header is whatever the caller sent. If clients can reach the service directly, bypassing the gateway, they can put any value there.
+- `User` shows who made the request, and appears only when `RB_SESSION_USER` is set. See [User session log](#user-session-log).
 - `Query`, `Body` and `Files` record the request **as it arrived**, before middleware such as `TrimStrings` or your own code changed it. Each line is left out when empty.
   - `Query` is the URL's query string. It is present for any method, GET included.
   - `Body` is the parsed JSON or form body. A body Laravel cannot parse, such as XML, plain text or broken JSON, is written as `Body : (raw) ...`.
@@ -168,6 +173,66 @@ Error  : Illuminate\Validation\ValidationException: The title field is required.
   - `/ \ < > : " | ? *` are refused, and the separator falls back to `~`.
 - A folder name longer than 200 characters is shortened and ends in a short hash, so it stays within file-system limits.
 - A request that ran no queries writes nothing.
+
+## User session log
+
+`RB_SESSION_USER` adds a `User` line to each logged request, saying who sent it:
+
+```env
+RB_SESSION_USER=email
+```
+
+```
+[2026-11-05 09:12:04] POST /api/v1/orders
+Route  : api/v1/orders
+Mode   : ON
+Result : ROLLED BACK
+Status : 201
+IP     : 127.0.0.1
+User   : budi@example.com
+```
+
+| `RB_SESSION_USER`     | `User` line                                             |
+|-----------------------|---------------------------------------------------------|
+| Not set, or empty     | Left out                                                |
+| `email`               | The user's `email`, or the session value `email`        |
+| `username`            | The user's `username`, or the session value `username`  |
+| `profile.name`        | A nested value, reached by dot notation                 |
+| `header:X-User-Email` | The `X-User-Email` request header                       |
+
+The `User` line is part of the query log, so it is written only for requests that `RBQUERY_LOG` logs. Under `NEVER` nothing is written.
+
+### From the user or the session
+
+For a field name such as `email`, the package uses the first of these that has a value:
+
+1. The `email` of the authenticated user, from any guard: session, JWT, Sanctum and so on. Only guards that already loaded their user during the request are asked, so no extra query runs.
+2. The session value `email`.
+
+When neither has a value, such as for a guest, the line reads `User : -`.
+
+### From a header
+
+`RB_SESSION_USER=header:X-User-Email` reads that request header, and nothing else: the user and the session are not consulted. Use it for a service behind a gateway, where the gateway passes the user along in a header rather than the service authenticating them.
+
+In a microservice setup, the gateway typically logs the authenticated user and each service logs the header the gateway forwards:
+
+```env
+# Gateway
+RB_SESSION_USER=email
+
+# Services behind it
+RB_SESSION_USER=header:X-User-Email
+```
+
+- Header names are case-insensitive.
+- A missing or empty header reads `User : -`.
+- A header is whatever the caller sent. If clients can reach the service directly, bypassing the gateway, they can put any value there.
+
+### Masking
+
+- A field named in `log.hidden`, such as `token`, is written as `********`.
+- Credential headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `X-Api-Key`, `X-CSRF-Token`, `X-XSRF-Token`) and headers named in `log.hidden` are masked too.
 
 ## Limits
 
