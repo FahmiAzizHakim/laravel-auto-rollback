@@ -54,7 +54,7 @@ class AutoRollbackTest extends TestCase
     {
         $this->postJson('v1/sites/articles')->assertOk();
 
-        $file = $this->logFile('post', 'v1/sites/articles.txt');
+        $file = $this->logFile('post', 'v1~sites~articles');
 
         $this->assertFileExists($file);
         $log = file_get_contents($file);
@@ -68,7 +68,7 @@ class AutoRollbackTest extends TestCase
     {
         $this->putJson('v1/sites/articles/5')->assertOk();
 
-        $this->assertFileExists($this->logFile('put', 'v1/sites/articles/{id_}.txt'));
+        $this->assertFileExists($this->logFile('put', 'v1~sites~articles~{id_}'));
     }
 
     public function test_requests_append_to_the_same_log_file(): void
@@ -76,7 +76,7 @@ class AutoRollbackTest extends TestCase
         $this->postJson('v1/sites/articles')->assertOk();
         $this->postJson('v1/sites/articles')->assertOk();
 
-        $log = file_get_contents($this->logFile('post', 'v1/sites/articles.txt'));
+        $log = file_get_contents($this->logFile('post', 'v1~sites~articles'));
         $this->assertSame(2, substr_count($log, 'insert into'));
     }
 
@@ -84,7 +84,7 @@ class AutoRollbackTest extends TestCase
     {
         $this->getJson('/')->assertOk();
 
-        $this->assertFileExists($this->logFile('get', 'index.txt'));
+        $this->assertFileExists($this->logFile('get', 'index'));
     }
 
     public function test_a_transaction_committed_mid_request_is_reported(): void
@@ -94,13 +94,13 @@ class AutoRollbackTest extends TestCase
         $this->assertSame(1, DB::table('articles')->count());
         $this->assertStringContainsString(
             '[testing] NOT ROLLED BACK',
-            file_get_contents($this->logFile('delete', 'v1/sites/articles.txt'))
+            file_get_contents($this->logFile('delete', 'v1~sites~articles'))
         );
     }
 
-    public function test_nothing_is_logged_when_logging_is_off(): void
+    public function test_nothing_is_logged_when_query_log_is_never(): void
     {
-        config(['auto-rollback.log.enabled' => false]);
+        config(['auto-rollback.log.query' => 'NEVER']);
 
         $this->postJson('v1/sites/articles')->assertOk();
 
@@ -133,7 +133,7 @@ class AutoRollbackTest extends TestCase
         $this->assertSame(0, DB::table('articles')->count());
         $this->assertStringContainsString(
             'Mode   : ON_ERROR',
-            file_get_contents($this->logFile('post', 'v1/sites/articles/fail.txt'))
+            file_get_contents($this->logFile('post', 'v1~sites~articles~fail'))
         );
     }
 

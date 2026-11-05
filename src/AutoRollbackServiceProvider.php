@@ -27,7 +27,7 @@ class AutoRollbackServiceProvider extends ServiceProvider
 
         $autoRollback = $this->app->make(AutoRollback::class);
 
-        if (! $autoRollback->enabled()) {
+        if (! $autoRollback->handles()) {
             return;
         }
 

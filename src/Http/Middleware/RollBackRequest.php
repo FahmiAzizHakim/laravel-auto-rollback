@@ -19,7 +19,7 @@ class RollBackRequest
     {
         // Checked again here, not only at boot, so a change of mode or
         // environment after the app booted is honoured.
-        if ($this->autoRollback->enabled()) {
+        if ($this->autoRollback->handles()) {
             $this->autoRollback->start($request);
         }
 

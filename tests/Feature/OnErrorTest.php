@@ -73,7 +73,7 @@ class OnErrorTest extends TestCase
 
         $this->assertSame(0, DB::table('articles')->count());
 
-        $log = file_get_contents($this->logFile('post', 'articles/exception.txt'));
+        $log = file_get_contents($this->logFile('post', 'articles~exception'));
         $this->assertStringContainsString('Mode   : ON_ERROR', $log);
         $this->assertStringContainsString('Error  : RuntimeException: Something broke', $log);
         $this->assertStringContainsString('[testing] rolled back', $log);
@@ -86,7 +86,7 @@ class OnErrorTest extends TestCase
         $this->assertSame(0, DB::table('articles')->count());
         $this->assertStringContainsString(
             'Error  : Illuminate\Validation\ValidationException',
-            file_get_contents($this->logFile('post', 'articles/validation.txt'))
+            file_get_contents($this->logFile('post', 'articles~validation'))
         );
     }
 
@@ -95,7 +95,7 @@ class OnErrorTest extends TestCase
         $this->postJson('articles/server-error')->assertStatus(503);
 
         $this->assertSame(0, DB::table('articles')->count());
-        $this->assertFileExists($this->logFile('post', 'articles/server-error.txt'));
+        $this->assertFileExists($this->logFile('post', 'articles~server-error'));
     }
 
     public function test_a_client_error_response_without_an_exception_is_committed(): void

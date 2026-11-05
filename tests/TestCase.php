@@ -22,6 +22,8 @@ abstract class TestCase extends Orchestra
         $this->logPath = sys_get_temp_dir().DIRECTORY_SEPARATOR.'autorollback-tests-'.getmypid();
 
         $app['config']->set('app.env', 'local');
+        // For the web middleware group's cookie encryption.
+        $app['config']->set('app.key', 'base64:'.base64_encode(str_repeat('k', 32)));
         $app['env'] = 'local';
 
         $app['config']->set('database.default', 'testing');
@@ -52,8 +54,11 @@ abstract class TestCase extends Orchestra
         parent::tearDown();
     }
 
-    protected function logFile(string $method, string $route): string
+    /**
+     * @param  string  $folder  the route's folder, e.g. v1~sites~articles
+     */
+    protected function logFile(string $method, string $folder): string
     {
-        return implode(DIRECTORY_SEPARATOR, [$this->logPath, now()->format('Ymd'), $method, str_replace('/', DIRECTORY_SEPARATOR, $route)]);
+        return implode(DIRECTORY_SEPARATOR, [$this->logPath, now()->format('Ymd'), $folder, $method.'.txt']);
     }
 }
